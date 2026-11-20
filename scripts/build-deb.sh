@@ -38,7 +38,7 @@ Package: apt-attest
 Version: $version-1
 Architecture: $arch
 Maintainer: Torstein Tauno Svendsen <torstei@gmail.com>
-Depends: apt (>= 1.1), dpkg
+Depends: apt (>= 1.1), dpkg, ca-certificates
 Section: admin
 Priority: optional
 Homepage: https://github.com/torstei/apt-attest

@@ -148,6 +148,21 @@ min_version = "0.6.0-1"
 …
 ```
 
+**Optional: where releases keep their bundles.** If a bundle is not found beside the
+package (see below), apt-attest looks for it in the GitHub release, at
+`https://github.com/<repository>/releases/download/v<upstream version>/<file>.sigstore.json`.
+A top-level `bundle_url` changes that address, for a project whose tags or downloads
+are laid out differently:
+
+```toml
+bundle_url = "https://downloads.example.org/{package}/{upstream_version}/{package}_{version}_{arch}.deb.sigstore.json"
+```
+
+It may use `{repository}`, `{package}`, `{version}` (without its epoch, as in the file
+name), `{upstream_version}` (also without the Debian revision) and `{arch}`, but not in
+the host. Values from the package are escaped, so a package cannot change where the
+bundle is fetched from.
+
 To find the values for a package, run `apt-attest explain` on it with its bundle (see
 below), or `gh attestation verify FILE --repo OWNER/NAME --format json`.
 
@@ -161,9 +176,9 @@ pool/main/pidvault_0.6.0-1_amd64.deb
 pool/main/pidvault_0.6.0-1_amd64.deb.sigstore.json
 ```
 
-The bundle comes from the same mirror as the package, so there is no GitHub API, no
-token and no rate limit, and it works through proxies and local mirrors. Where it is
-served from does not need to be trusted: verifying it is what makes it trusted.
+That way the bundle comes from the same mirror as the package, so it works through proxies
+and local mirrors with no GitHub API, token or rate limit. Where a bundle is served from
+does not need to be trusted: verifying it is what makes it trusted.
 
 The hook is given the local path of each `.deb`, not the URL it came from. To find the
 URL, apt-attest hashes the file and looks for the record with that SHA256 in the
@@ -173,8 +188,22 @@ the hash identifies the exact copy being installed, even when several sources ca
 same version with different contents, which `apt-cache show` and `apt-cache policy`
 cannot tell apart. None of this takes apt's lock.
 
-For a local install (`apt install ./pidvault_0.6.0-1_amd64.deb`), the bundle is looked
-for next to the file. A covered package with no bundle there is refused.
+apt-attest looks for a package's bundle in this order, and uses the first that verifies
+and satisfies every policy covering the package:
+
+1. next to the file: for a local install (`apt install ./pidvault_0.6.0-1_amd64.deb`),
+   a bundle downloaded next to it;
+2. next to the package on each source whose index lists it;
+3. for each covering policy, its `bundle_url`, by default the project's GitHub release;
+4. GitHub's attestation API, which keeps every attestation made in the policy's
+   repository, looked up by the file's SHA256. Without a token, GitHub allows 60
+   requests an hour per IP address; a package that has verified once is checked from
+   the cache without asking again.
+
+The last two come from the policy, never from the package. So a package downloaded on
+its own, perhaps under another name, is still checked against its real attestation. One
+that none of these verify is refused, and for a local file the message ends with how to
+go on: put the bundle next to the file, or install it unverified with `dpkg -i`.
 
 The bundle is fetched over HTTP(S) or read from a `file:` source, through the proxy in
 `Acquire::https::Proxy` or `Acquire::http::Proxy` if apt has one, else the environment's.

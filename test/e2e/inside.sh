@@ -172,10 +172,12 @@ mkdir -p /tmp/p
 sed 's|http://127.0.0.1:8001|https://127.0.0.1:8009|' /etc/apt/attestations.d/pidvault.toml > /tmp/p/x.toml
 apt-attest policies --policy-dir /tmp/p && fail "an origin no source matches went unreported"
 
-step "pidvault with its bundle missing is refused"
+step "pidvault with its bundle missing from the repository is checked against its GitHub release"
 mv "/srv/attested/pool/main/$pv.sigstore.json" /tmp/held-bundle
-refused pidvault "refusing pidvault 0.6.0-1" "$pv.sigstore.json: not found"
-not_installed pidvault
+installs pidvault
+grep -F "https://github.com/torstei/pidvault/releases/download/v0.6.0/$pv.sigstore.json" /tmp/apt.log
+apt-get "${apt_q[@]}" remove -y pidvault >/dev/null
+rm -rf /var/lib/apt-attest/verified /var/cache/apt/archives/pidvault_*.deb
 mv /tmp/held-bundle "/srv/attested/pool/main/$pv.sigstore.json"
 
 step "a different pidvault file under the same name and version, with the real bundle, is refused"
@@ -207,18 +209,30 @@ sed -i 's|release.yml|other.yml|' /etc/apt/attestations.d/pidvault.toml
 refused "--reinstall pidvault" "workflow: want https://github.com/torstei/pidvault/.github/workflows/other.yml"
 sed -i 's|other.yml|release.yml|' /etc/apt/attestations.d/pidvault.toml
 
-step "a local install uses the bundle beside the file, and is refused without it"
+step "a lone downloaded pidvault is checked against its GitHub release"
 apt-get "${apt_q[@]}" remove -y pidvault >/dev/null
 sed -i '/8001/d' /etc/apt/sources.list.d/e2e.list
 update
 apt-get clean
 rm -rf /var/lib/apt-attest/verified
 mkdir -p /tmp/local
-cp "$pidvault_deb" /tmp/local/
-refused "/tmp/local/$pv" "refusing pidvault 0.6.0-1" "/tmp/local/$pv.sigstore.json: not found"
-cp "$pidvault_bundle" "/tmp/local/$pv.sigstore.json"
+cp "$pidvault_deb" "/tmp/local/download (1).deb"
+installs "/tmp/local/download (1).deb"
+grep -F "https://github.com/torstei/pidvault/releases/download/v0.6.0/$pv.sigstore.json" /tmp/apt.log
+apt-get "${apt_q[@]}" remove -y pidvault >/dev/null
+
+step "a local install uses the bundle beside the file first"
+rm -rf /var/lib/apt-attest/verified
+cp "$pidvault_deb" "$pidvault_bundle" /tmp/local/
 installs "/tmp/local/$pv"
-dpkg-query -W pidvault
+grep -F "(/etc/apt/attestations.d/pidvault.toml, /tmp/local/$pv.sigstore.json)" /tmp/apt.log
+apt-get "${apt_q[@]}" remove -y pidvault >/dev/null
+
+step "a tampered local pidvault is refused, and told how to go on"
+mkdir -p /tmp/tampered
+dpkg-deb --root-owner-group --build /tmp/repack "/tmp/tampered/$pv" >/dev/null
+refused "/tmp/tampered/$pv" "refusing pidvault 0.6.0-1" "api.github.com/repos/torstei/pidvault/attestations/sha256:" "sudo dpkg -i /tmp/tampered/$pv"
+not_installed pidvault
 
 step "a broken policy stops every install"
 echo 'refz = ["x"]' >> /etc/apt/attestations.d/pidvault.toml

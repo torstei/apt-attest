@@ -44,6 +44,17 @@ func TestParseV3(t *testing.T) {
 	}
 }
 
+func TestFileNamesWithSpaces(t *testing.T) {
+	in, err := Parse(strings.NewReader("VERSION 3\n\npidvault - - none < 0.6.0-1 amd64 none /tmp/local/download (1).deb\n" +
+		"x - - none < 1.0 amd64 none /tmp/a  b.deb\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if u := in.Unpacks(); len(u) != 2 || u[0].File != "/tmp/local/download (1).deb" || u[0].NewArch != "amd64" || u[1].File != "/tmp/a  b.deb" {
+		t.Fatalf("%+v", u)
+	}
+}
+
 func TestParseV2(t *testing.T) {
 	in, err := Parse(strings.NewReader("VERSION 2\nA=b\n\npidvault - < 0.6.0-1 /x/pidvault.deb\n"))
 	if err != nil {

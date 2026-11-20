@@ -64,9 +64,9 @@ func Parse(r io.Reader) (*Input, error) {
 		if line == "" {
 			continue
 		}
-		f := strings.Fields(line)
-		if len(f) != fields {
-			return nil, fmt.Errorf("package line has %d fields, want %d: %q", len(f), fields, line)
+		f, ok := splitFields(line, fields)
+		if !ok {
+			return nil, fmt.Errorf("package line has fewer than %d fields: %q", fields, line)
 		}
 		a := Action{Package: f[0], OldVersion: f[1]}
 		if in.Version == 3 {
@@ -128,4 +128,24 @@ func (in *Input) ArchivesDir() string {
 	}
 	cache := under(get("Dir", "/"), get("Dir::Cache", "var/cache/apt/"))
 	return under(cache, get("Dir::Cache::archives", "archives/"))
+}
+
+// splitFields splits a package line into n fields. The last is a file name, which may
+// itself contain spaces, so it is the rest of the line.
+func splitFields(line string, n int) ([]string, bool) {
+	f := make([]string, 0, n)
+	rest := line
+	for len(f) < n-1 {
+		rest = strings.TrimLeft(rest, " ")
+		field, after, ok := strings.Cut(rest, " ")
+		if !ok || field == "" {
+			return nil, false
+		}
+		f = append(f, field)
+		rest = after
+	}
+	if rest == "" {
+		return nil, false
+	}
+	return append(f, rest), true
 }
