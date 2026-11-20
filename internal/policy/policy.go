@@ -9,6 +9,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -39,6 +40,7 @@ type Identity struct {
 type Policy struct {
 	Path       string   `toml:"-"`
 	MinVersion string   `toml:"min_version"`
+	BundleURL  string   `toml:"bundle_url"`
 	Match      Match    `toml:"match"`
 	Identity   Identity `toml:"identity"`
 
@@ -81,6 +83,11 @@ func Parse(name string, data []byte) (*Policy, error) {
 func (p *Policy) validate() []string {
 	var problems []string
 	id := p.Identity
+	if p.BundleURL != "" {
+		if err := checkBundleURL(p.BundleURL); err != nil {
+			problems = append(problems, "bundle_url: "+err.Error())
+		}
+	}
 	if len(p.Match.Packages) == 0 && len(p.Match.Origins) == 0 {
 		problems = append(problems, "match needs packages or origins")
 	}
@@ -294,4 +301,63 @@ func Failures(cmp []Comparison) []Comparison {
 		}
 	}
 	return out
+}
+
+// DefaultBundleURL is where GitHub releases keep a package's bundle when the release is
+// tagged v plus the upstream version, relative to the GitHub server.
+const DefaultBundleURL = "{github}/{repository}/releases/download/v{upstream_version}/{package}_{version}_{arch}.deb.sigstore.json"
+
+var bundleURLFields = map[string]bool{"repository": true, "package": true, "version": true, "upstream_version": true, "arch": true}
+
+func checkBundleURL(tmpl string) error {
+	scheme, rest, ok := strings.Cut(tmpl, "://")
+	host, _, _ := strings.Cut(rest, "/")
+	if !ok || (scheme != "https" && scheme != "http") || host == "" {
+		return fmt.Errorf("%q is not an http(s) URL", tmpl)
+	}
+	if strings.ContainsAny(host, "{}") {
+		return fmt.Errorf("%q: placeholders are not allowed in the host", tmpl)
+	}
+	if _, err := url.Parse(placeholder.ReplaceAllString(tmpl, "x")); err != nil {
+		return fmt.Errorf("%q: %v", tmpl, err)
+	}
+	for _, m := range placeholder.FindAllStringSubmatch(tmpl, -1) {
+		if !bundleURLFields[m[1]] {
+			return fmt.Errorf("unknown placeholder {%s}", m[1])
+		}
+	}
+	return nil
+}
+
+var placeholder = regexp.MustCompile(`\{([a-z_]*)\}`)
+
+// ExpandBundleURL fills in a bundle_url template for a package. Every value from the
+// package is path-escaped, so a crafted name or version cannot leave the template's
+// host or path.
+func (p *Policy) ExpandBundleURL(githubURL, pkg, version, arch string) (string, error) {
+	tmpl := p.BundleURL
+	if tmpl == "" {
+		tmpl = DefaultBundleURL
+	}
+	fileVersion := version
+	if _, v, ok := strings.Cut(version, ":"); ok {
+		fileVersion = v
+	}
+	upstream := fileVersion
+	if i := strings.LastIndex(upstream, "-"); i > 0 {
+		upstream = upstream[:i]
+	}
+	values := map[string]string{
+		"github":           strings.TrimRight(githubURL, "/"),
+		"repository":       p.Identity.Repository,
+		"package":          url.PathEscape(pkg),
+		"version":          url.PathEscape(fileVersion),
+		"upstream_version": url.PathEscape(upstream),
+		"arch":             url.PathEscape(arch),
+	}
+	out := placeholder.ReplaceAllStringFunc(tmpl, func(m string) string { return values[m[1:len(m)-1]] })
+	if _, err := url.Parse(out); err != nil {
+		return "", err
+	}
+	return out, nil
 }

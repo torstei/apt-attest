@@ -27,6 +27,7 @@ const BundleSuffix = ".sigstore.json"
 type Package struct {
 	Name    string
 	Version string
+	Arch    string
 	File    string
 	SHA256  string
 	Sources []aptsource.Source
@@ -46,6 +47,10 @@ type Engine struct {
 	// ArchivesDir is where apt keeps the packages it downloads. When set, and a policy
 	// matches by origin, a package there that no index accounts for is refused.
 	ArchivesDir string
+	// GitHubURL and GitHubAPIURL are where release downloads and the attestation API
+	// are; empty means github.com.
+	GitHubURL    string
+	GitHubAPIURL string
 
 	verifier *attest.Verifier
 	rootName string
@@ -158,34 +163,93 @@ func (e *Engine) Verifier() (*attest.Verifier, error) {
 	return v, nil
 }
 
-// bundleLocations lists where a package's bundle may be, nearest first: beside the
-// local file (an `apt install ./x.deb`), then beside the package on each source.
-func (e *Engine) bundleLocations(p Package) []string {
-	if e.BundlePath != "" {
-		return []string{e.BundlePath}
+// A location is one place a package's bundle may be; get returns the bundles there.
+type location struct {
+	name string
+	get  func() ([][]byte, error)
+}
+
+// locations lists where a package's bundle may be, nearest first: beside the file (an
+// `apt install ./x.deb`), beside the package on each source that lists it, then for each
+// covering policy its bundle_url and GitHub's attestation API. The last two come from
+// the policy, never from the package, so the package cannot choose what is fetched.
+func (e *Engine) locations(p Package, pols []*policy.Policy) []location {
+	one := func(name string, read func(string) ([]byte, error)) location {
+		return location{name, func() ([][]byte, error) {
+			data, err := read(name)
+			if err != nil {
+				return nil, err
+			}
+			return [][]byte{data}, nil
+		}}
 	}
-	locs := []string{p.File + BundleSuffix}
+	if e.BundlePath != "" {
+		return []location{one(e.BundlePath, fetch.ReadLocal)}
+	}
+	locs := []location{one(p.File+BundleSuffix, fetch.ReadLocal)}
+	seen := map[string]bool{}
 	for _, s := range p.Sources {
-		if u, err := s.URL(); err == nil {
-			locs = append(locs, u+BundleSuffix)
+		if u, err := s.URL(); err == nil && !seen[u] {
+			seen[u] = true
+			locs = append(locs, one(u+BundleSuffix, e.Fetcher.Get))
+		}
+	}
+	githubURL, apiURL := orDefault(e.GitHubURL, "https://github.com"), orDefault(e.GitHubAPIURL, "https://api.github.com")
+	for _, pol := range pols {
+		if u, err := pol.ExpandBundleURL(githubURL, p.Name, p.Version, p.Arch); err == nil && p.Arch != "" && !seen[u] {
+			seen[u] = true
+			locs = append(locs, one(u, e.Fetcher.Get))
+		}
+	}
+	for _, pol := range pols {
+		repo := pol.Identity.Repository
+		if key := "api:" + strings.ToLower(repo); !seen[key] {
+			seen[key] = true
+			locs = append(locs, location{"GitHub attestations of " + repo, func() ([][]byte, error) {
+				return e.Fetcher.GitHubAttestations(apiURL, repo, p.SHA256)
+			}})
 		}
 	}
 	return locs
+}
+
+func orDefault(s, def string) string {
+	if s == "" {
+		return def
+	}
+	return s
 }
 
 func (e *Engine) untraceable(p Package) bool {
 	if e.ArchivesDir == "" || len(p.Sources) > 0 || !e.anyOrigins() {
 		return false
 	}
-	return filepath.Dir(filepath.Clean(p.File)) == filepath.Clean(e.ArchivesDir)
+	return e.inArchives(p)
 }
 
-// Claims returns the verified claims for a package, from the cache or by fetching and
-// verifying its bundle.
-func (e *Engine) Claims(p Package, useCache bool) (policy.Claims, string, error) {
+func (e *Engine) inArchives(p Package) bool {
+	return e.ArchivesDir != "" && filepath.Dir(filepath.Clean(p.File)) == filepath.Clean(e.ArchivesDir)
+}
+
+// Satisfies reports whether claims meet every policy.
+func Satisfies(claims policy.Claims, p Package, pols []*policy.Policy) bool {
+	for _, pol := range pols {
+		if len(policy.Failures(pol.Compare(claims, p.SHA256, p.Version, VersionLess))) > 0 {
+			return false
+		}
+	}
+	return true
+}
+
+// Claims finds the verified claims for a package: the first that satisfy every policy
+// in pols, from the cache or from the locations in order. A location can hold several
+// attestations, provenance and an SBOM say, so verifying is not enough to stop looking.
+// If none satisfy them, it returns the first claims that verified, for reporting what
+// did not match, or an error listing what was tried.
+func (e *Engine) Claims(p Package, pols []*policy.Policy, useCache bool) (policy.Claims, string, error) {
 	c := e.cache()
 	if useCache {
-		if claims, ok := c.Get(p.SHA256); ok {
+		if claims, ok := c.Get(p.SHA256); ok && Satisfies(claims, p, pols) {
 			return claims, "cache", nil
 		}
 	}
@@ -199,26 +263,33 @@ func (e *Engine) Claims(p Package, useCache bool) (policy.Claims, string, error)
 			tried = append(tried, text.Safe(err.Error()))
 		}
 	}
+	var fallback *policy.Claims
+	var fallbackFrom string
 	verifyFailed := false
-	for _, loc := range e.bundleLocations(p) {
-		var data []byte
-		if !strings.Contains(loc, "://") {
-			data, err = fetch.ReadLocal(loc)
-		} else {
-			data, err = e.Fetcher.Get(loc)
-		}
+	for _, loc := range e.locations(p, pols) {
+		bundles, err := loc.get()
 		if err != nil {
 			tried = append(tried, text.Safe(err.Error()))
 			continue
 		}
-		claims, err := v.Verify(data, p.SHA256)
-		if err != nil {
-			verifyFailed = true
-			tried = append(tried, text.Safe(fmt.Sprintf("%s: %v", loc, err)))
-			continue
+		for _, data := range bundles {
+			claims, err := v.Verify(data, p.SHA256)
+			if err != nil {
+				verifyFailed = true
+				tried = append(tried, text.Safe(fmt.Sprintf("%s: %v", loc.name, err)))
+				continue
+			}
+			if Satisfies(claims, p, pols) {
+				c.Put(p.SHA256, claims)
+				return claims, loc.name, nil
+			}
+			if fallback == nil {
+				fallback, fallbackFrom = &claims, loc.name
+			}
 		}
-		c.Put(p.SHA256, claims)
-		return claims, loc, nil
+	}
+	if fallback != nil {
+		return *fallback, fallbackFrom, nil
 	}
 	if verifyFailed && e.rootName == "built-in" {
 		tried = append(tried, "trusted root: built-in copy; run `apt-attest refresh` if a newer Sigstore key is needed")
@@ -239,29 +310,40 @@ func (e *Engine) Check(p Package) bool {
 	if len(pols) == 0 {
 		return true
 	}
-	claims, from, err := e.Claims(p, true)
+	claims, from, err := e.Claims(p, pols, true)
 	if err != nil {
 		fmt.Fprintf(e.Out, "apt-attest: refusing %s: no attestation that verifies\n  policy: %s\n  tried:\n    %s\n",
 			name, policyNames(pols), err)
+		e.hint(p)
 		return false
 	}
-	ok := true
-	for _, pol := range pols {
-		fails := policy.Failures(pol.Compare(claims, p.SHA256, p.Version, VersionLess))
-		if len(fails) == 0 {
-			continue
+	if !Satisfies(claims, p, pols) {
+		for _, pol := range pols {
+			fails := policy.Failures(pol.Compare(claims, p.SHA256, p.Version, VersionLess))
+			if len(fails) == 0 {
+				continue
+			}
+			fmt.Fprintf(e.Out, "apt-attest: refusing %s: attestation from %s does not match policy %s\n", name, text.Safe(from), text.Safe(pol.Path))
+			for _, f := range fails {
+				fmt.Fprintf(e.Out, "  %s: want %s, got %s\n", f.Field, text.Safe(f.Want), orNone(text.Safe(f.Got)))
+			}
 		}
-		ok = false
-		fmt.Fprintf(e.Out, "apt-attest: refusing %s: attestation does not match policy %s\n", name, text.Safe(pol.Path))
-		for _, f := range fails {
-			fmt.Fprintf(e.Out, "  %s: want %s, got %s\n", f.Field, text.Safe(f.Want), orNone(text.Safe(f.Got)))
-		}
+		e.hint(p)
+		return false
 	}
-	if ok {
-		fmt.Fprintf(e.Out, "apt-attest: %s %s attested by %s (%s, %s)\n",
-			text.Safe(p.Name), text.Safe(p.Version), text.Safe(claims.BuildSignerURI), policyNames(pols), text.Safe(from))
+	fmt.Fprintf(e.Out, "apt-attest: %s %s attested by %s (%s, %s)\n",
+		text.Safe(p.Name), text.Safe(p.Version), text.Safe(claims.BuildSignerURI), policyNames(pols), text.Safe(from))
+	return true
+}
+
+// hint tells someone installing a local file how to go on; a package apt downloaded has
+// no such way out.
+func (e *Engine) hint(p Package) {
+	if e.inArchives(p) {
+		return
 	}
-	return ok
+	f := text.Safe(p.File)
+	fmt.Fprintf(e.Out, "  If you have its bundle, put it at %s%s and try again.\n  To install it without the check, knowing it is unverified: sudo dpkg -i %s\n", f, BundleSuffix, f)
 }
 
 func policyNames(pols []*policy.Policy) string {
@@ -308,10 +390,13 @@ func VersionLess(a, b string) (bool, error) {
 
 // ReadDeb reads a package file's name and version from its control file.
 func ReadDeb(file string) (Package, error) {
-	out, err := exec.Command("dpkg-deb", "--show", "--showformat", "${Package}\t${Version}", file).Output()
+	out, err := exec.Command("dpkg-deb", "--show", "--showformat", "${Package}\t${Version}\t${Architecture}", file).Output()
 	if err != nil {
 		return Package{}, fmt.Errorf("dpkg-deb --show %s: %w", file, err)
 	}
-	name, version, _ := strings.Cut(strings.TrimSpace(string(out)), "\t")
-	return Package{Name: name, Version: version, File: file}, nil
+	f := strings.SplitN(strings.TrimSpace(string(out)), "\t", 3)
+	if len(f) != 3 {
+		return Package{}, fmt.Errorf("dpkg-deb --show %s: unexpected output", file)
+	}
+	return Package{Name: f[0], Version: f[1], Arch: f[2], File: file}, nil
 }

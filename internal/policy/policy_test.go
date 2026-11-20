@@ -262,3 +262,35 @@ func TestLoadDir(t *testing.T) {
 		t.Fatalf("broken policy: %v", err)
 	}
 }
+
+func TestBundleURL(t *testing.T) {
+	p := mustParse(t, valid)
+	cases := []struct{ pkg, version, arch, want string }{
+		{"pidvault", "0.6.0-1", "amd64", "https://github.com/torstei/pidvault/releases/download/v0.6.0/pidvault_0.6.0-1_amd64.deb.sigstore.json"},
+		{"pidvault", "2:1.0~rc1-3+b1", "arm64", "https://github.com/torstei/pidvault/releases/download/v1.0~rc1/pidvault_1.0~rc1-3+b1_arm64.deb.sigstore.json"},
+		{"pidvault", "1.0", "all", "https://github.com/torstei/pidvault/releases/download/v1.0/pidvault_1.0_all.deb.sigstore.json"},
+		{"x/../../evil", "1.0?a=b#c", "amd64", "https://github.com/torstei/pidvault/releases/download/v1.0%3Fa=b%23c/x%2F..%2F..%2Fevil_1.0%3Fa=b%23c_amd64.deb.sigstore.json"},
+	}
+	for _, c := range cases {
+		got, err := p.ExpandBundleURL("https://github.com/", c.pkg, c.version, c.arch)
+		if err != nil || got != c.want {
+			t.Errorf("%s %s %s:\n got %s (%v)\nwant %s", c.pkg, c.version, c.arch, got, err, c.want)
+		}
+	}
+
+	custom := mustParse(t, `bundle_url = "https://downloads.example/{package}/{upstream_version}/{package}_{version}_{arch}.deb.sigstore.json"`+"\n"+valid)
+	if got, _ := custom.ExpandBundleURL("https://github.com", "pidvault", "0.6.0-1", "amd64"); got != "https://downloads.example/pidvault/0.6.0/pidvault_0.6.0-1_amd64.deb.sigstore.json" {
+		t.Errorf("custom: %s", got)
+	}
+
+	for _, bad := range []string{
+		`"ftp://x/{package}"`,
+		`"https://{package}.example/x"`,
+		`"https://example/{name}"`,
+		`"/relative/{package}"`,
+	} {
+		if _, err := Parse("t.toml", []byte("bundle_url = "+bad+"\n"+valid)); err == nil {
+			t.Errorf("bundle_url %s accepted", bad)
+		}
+	}
+}

@@ -140,7 +140,7 @@ func hook(e *app.Engine, stdin io.Reader, stderr io.Writer) int {
 
 	var pkgs []app.Package
 	for _, a := range in.Unpacks() {
-		pkgs = append(pkgs, app.Package{Name: a.Package, Version: a.NewVersion, File: a.File})
+		pkgs = append(pkgs, app.Package{Name: a.Package, Version: a.NewVersion, Arch: a.NewArch, File: a.File})
 	}
 	pkgs = e.Candidates(pkgs)
 	if len(pkgs) == 0 {
@@ -206,7 +206,7 @@ func explain(e *app.Engine, file string) int {
 		}
 		fmt.Printf("source    %s\n", safe(u))
 	}
-	claims, from, err := e.Claims(p, false)
+	claims, from, err := e.Claims(p, e.Covering(p), false)
 	if err != nil {
 		fmt.Printf("\nno attestation that verifies:\n    %s\n", err)
 		return 1

@@ -2,6 +2,7 @@ package app
 
 import (
 	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -28,11 +29,21 @@ func readFixture(t *testing.T, name string) []byte {
 // engine serves the fixture bundle from a fake apt repository whose index lists the
 // packages given, all at pool/main/<name>.deb.
 func engine(t *testing.T, serveBundle bool, index map[string]string) (*Engine, *bytes.Buffer, string) {
+	return engineWith(t, serveBundle, index, nil)
+}
+
+// engineWith also serves routes, by path, from the same server, which stands in for
+// GitHub's release downloads and attestation API too.
+func engineWith(t *testing.T, serveBundle bool, index map[string]string, routes map[string]http.HandlerFunc) (*Engine, *bytes.Buffer, string) {
 	t.Helper()
 	bundle := readFixture(t, "pidvault_0.6.0-1_amd64.deb.sigstore.json")
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if serveBundle && r.URL.Path == "/repo/pool/main/pidvault.deb.sigstore.json" {
 			w.Write(bundle)
+			return
+		}
+		if h, ok := routes[r.URL.Path]; ok {
+			h(w, r)
 			return
 		}
 		http.NotFound(w, r)
@@ -56,10 +67,12 @@ func engine(t *testing.T, serveBundle bool, index map[string]string) (*Engine, *
 	f, _ := fetch.New("DIRECT")
 	var out bytes.Buffer
 	e := &Engine{
-		Policies: []*policy.Policy{p},
-		StateDir: filepath.Join(dir, "state"),
-		Fetcher:  f,
-		Out:      &out,
+		Policies:     []*policy.Policy{p},
+		StateDir:     filepath.Join(dir, "state"),
+		Fetcher:      f,
+		Out:          &out,
+		GitHubURL:    srv.URL + "/github",
+		GitHubAPIURL: srv.URL + "/api",
 		IndexTargets: func() ([]aptsource.IndexTarget, error) {
 			return []aptsource.IndexTarget{{RepoURI: repo, Filename: listFile}}, nil
 		},
@@ -194,5 +207,88 @@ func TestOutputEscapesWhatTheRepositoryWrote(t *testing.T) {
 	}
 	if strings.ContainsAny(out.String(), "\x1b\r") {
 		t.Fatalf("control characters reached the terminal: %q", out)
+	}
+}
+
+const (
+	releaseBundlePath = "/github/torstei/pidvault/releases/download/v0.6.0/pidvault_0.6.0-1_amd64.deb.sigstore.json"
+	apiPath           = "/api/repos/torstei/pidvault/attestations/sha256:" + pidvaultSHA256
+)
+
+func lonePidvault(dir string) Package {
+	return Package{Name: "pidvault", Version: "0.6.0-1", Arch: "amd64", File: filepath.Join(dir, "download (1).deb"), SHA256: pidvaultSHA256}
+}
+
+func TestALoneDownloadFindsItsBundleInTheGitHubRelease(t *testing.T) {
+	bundle := readFixture(t, "pidvault_0.6.0-1_amd64.deb.sigstore.json")
+	e, out, dir := engineWith(t, false, nil, map[string]http.HandlerFunc{
+		releaseBundlePath: func(w http.ResponseWriter, r *http.Request) { w.Write(bundle) },
+		apiPath: func(w http.ResponseWriter, r *http.Request) {
+			t.Error("the API was asked although the release had the bundle")
+		},
+	})
+	if p := located(t, e, lonePidvault(dir)); !e.Check(p) || !strings.Contains(out.String(), "releases/download/v0.6.0/") {
+		t.Fatal(out)
+	}
+}
+
+// The API returns every attestation for the digest; one that verifies but is not the
+// provenance the policy wants (an SBOM, say) must not stop the search.
+func TestTheAttestationAPIIsTheLastResort(t *testing.T) {
+	bundle := readFixture(t, "pidvault_0.6.0-1_amd64.deb.sigstore.json")
+	e, out, dir := engineWith(t, false, nil, map[string]http.HandlerFunc{
+		apiPath: func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"attestations":[{"bundle":{"mediaType":"x"}},{"bundle":null,"bundle_url":"https://elsewhere"},{"bundle":%s}]}`, bundle)
+		},
+	})
+	if p := located(t, e, lonePidvault(dir)); !e.Check(p) || !strings.Contains(out.String(), "GitHub attestations of torstei/pidvault") {
+		t.Fatal(out)
+	}
+}
+
+func TestOnlyAnAttestationThatMeetsThePolicyCounts(t *testing.T) {
+	bundle := readFixture(t, "pidvault_0.6.0-1_amd64.deb.sigstore.json")
+	e, out, dir := engineWith(t, false, nil, map[string]http.HandlerFunc{
+		releaseBundlePath: func(w http.ResponseWriter, r *http.Request) { w.Write(bundle) },
+		apiPath: func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `{"attestations":[{"bundle":%s}]}`, bundle)
+		},
+	})
+	e.Policies[0].Identity.PredicateType = "https://spdx.dev/Document/v2.3"
+	if e.Check(located(t, e, lonePidvault(dir))) {
+		t.Fatal("accepted an attestation of another type")
+	}
+	if !strings.Contains(out.String(), "predicate_type: want https://spdx.dev/Document/v2.3") {
+		t.Fatal(out)
+	}
+}
+
+func TestARefusedLocalFileSaysWhatToDo(t *testing.T) {
+	e, out, dir := engineWith(t, false, nil, map[string]http.HandlerFunc{
+		apiPath: func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("X-RateLimit-Remaining", "0")
+			w.Header().Set("X-RateLimit-Reset", "1700000000")
+			w.WriteHeader(http.StatusForbidden)
+		},
+	})
+	p := located(t, e, lonePidvault(dir))
+	if e.Check(p) {
+		t.Fatal(out)
+	}
+	for _, want := range []string{
+		"limit of 60 requests an hour for this IP address is used up",
+		"put it at " + p.File + ".sigstore.json",
+		"sudo dpkg -i " + p.File,
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("message lacks %q:\n%s", want, out)
+		}
+	}
+
+	out.Reset()
+	e.ArchivesDir = dir
+	e.Check(p)
+	if strings.Contains(out.String(), "dpkg -i") {
+		t.Errorf("a package apt downloaded was offered the dpkg -i way out:\n%s", out)
 	}
 }
