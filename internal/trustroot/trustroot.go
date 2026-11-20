@@ -5,11 +5,14 @@ package trustroot
 import (
 	_ "embed"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/sigstore/sigstore-go/pkg/root"
 	"github.com/sigstore/sigstore-go/pkg/tuf"
+	"github.com/theupdateframework/go-tuf/v2/metadata/fetcher"
 )
 
 //go:embed trusted_root.json
@@ -36,7 +39,11 @@ func Load(stateDir string) (*root.TrustedRoot, string, error) {
 // Refresh fetches the current trusted root from Sigstore's TUF repository, verified
 // from the TUF root built into sigstore-go, and stores it in stateDir.
 func Refresh(stateDir string) (string, error) {
-	opts := tuf.DefaultOptions().WithCachePath(filepath.Join(stateDir, "tuf"))
+	// runs from apt update, so a stalled network must not hold apt up for long
+	f := fetcher.NewDefaultFetcher()
+	f.SetHTTPClient(&http.Client{Timeout: 20 * time.Second})
+	f.SetRetry(time.Second, 2)
+	opts := tuf.DefaultOptions().WithCachePath(filepath.Join(stateDir, "tuf")).WithFetcher(f)
 	client, err := tuf.New(opts)
 	if err != nil {
 		return "", fmt.Errorf("TUF: %w", err)

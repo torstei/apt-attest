@@ -118,6 +118,54 @@ step "an unattested package under a new name, from the pinned origin, is refused
 refused pidvault-helper "refusing pidvault-helper 1.0" "/etc/apt/attestations.d/pidvault.toml" "pidvault-helper_1.0_all.deb.sigstore.json: not found"
 not_installed pidvault-helper
 
+# Rewrites one package's stanza in the attested repository's index the way someone
+# holding the repository key could, then re-signs it.
+tamper() {
+    local name=$1 how=$2
+    dummy "$name"
+    cp "/tmp/${name}_1.0_all.deb" /srv/attested/pool/main/
+    publish /srv/attested
+    python3 - /srv/attested/dists/stable/main/binary-amd64/Packages "$name" "$how" <<'PY'
+import sys
+path, name, how = sys.argv[1:]
+stanzas = open(path).read().strip().split("\n\n")
+for i, s in enumerate(stanzas):
+    if f"Package: {name}\n" in s:
+        if how == "lowercase-fields":
+            s = "\n".join(l if l.startswith(" ") else l.split(":", 1)[0].lower() + ":" + l.split(":", 1)[1] for l in s.split("\n"))
+        elif how == "uppercase-name":
+            s = s.replace(f"Package: {name}", f"Package: {name.upper()}")
+        stanzas[i] = s
+open(path, "w").write("\n\n".join(stanzas) + "\n")
+PY
+    (
+        cd /srv/attested
+        apt-ftparchive -o APT::FTPArchive::Release::Suite=stable -o APT::FTPArchive::Release::Codename=stable \
+            -o APT::FTPArchive::Release::Architectures=amd64 -o APT::FTPArchive::Release::Components=main \
+            release dists/stable > dists/stable/Release
+        gpg --batch --yes --clearsign --output dists/stable/InRelease dists/stable/Release
+    )
+    update
+}
+
+step "an unattested package whose index stanza has lowercase field names is still refused"
+tamper evil-lowercase lowercase-fields
+refused evil-lowercase "refusing evil-lowercase 1.0"
+not_installed evil-lowercase
+
+step "an unattested package whose index stanza has an uppercase name is still refused"
+tamper evil-uppercase uppercase-name
+refused evil-uppercase "refusing evil-uppercase 1.0"
+not_installed evil-uppercase
+publish /srv/attested
+update
+
+step "apt-attest policies finds the policy's origin among apt's sources"
+apt-attest policies
+mkdir -p /tmp/p
+sed 's|http://127.0.0.1:8001|https://127.0.0.1:8009|' /etc/apt/attestations.d/pidvault.toml > /tmp/p/x.toml
+apt-attest policies --policy-dir /tmp/p && fail "an origin no source matches went unreported"
+
 step "pidvault with its bundle missing is refused"
 mv "/srv/attested/pool/main/$pv.sigstore.json" /tmp/held-bundle
 refused pidvault "refusing pidvault 0.6.0-1" "$pv.sigstore.json: not found"

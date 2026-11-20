@@ -66,3 +66,22 @@ func TestRejects(t *testing.T) {
 		}
 	}
 }
+
+func TestArchivesDir(t *testing.T) {
+	cases := []struct{ config, want string }{
+		{"", "/var/cache/apt/archives"},
+		{"Dir=/\nDir::Cache=var/cache/apt/\nDir::Cache::archives=archives/\n", "/var/cache/apt/archives"},
+		{"Dir::Cache::archives=/home/u/apt-archives\n", "/home/u/apt-archives"},
+		{"Dir=/srv/chroot/\n", "/srv/chroot/var/cache/apt/archives"},
+		{"Dir::Cache=/tmp/cache\nDir::Cache::archives=a\n", "/tmp/cache/a"},
+	}
+	for _, c := range cases {
+		in, err := Parse(strings.NewReader("VERSION 3\n" + c.config + "\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := in.ArchivesDir(); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.config, got, c.want)
+		}
+	}
+}

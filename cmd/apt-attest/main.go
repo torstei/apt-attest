@@ -11,9 +11,11 @@ import (
 	"text/tabwriter"
 
 	"github.com/torstei/apt-attest/internal/app"
+	"github.com/torstei/apt-attest/internal/aptsource"
 	"github.com/torstei/apt-attest/internal/fetch"
 	"github.com/torstei/apt-attest/internal/hookinput"
 	"github.com/torstei/apt-attest/internal/policy"
+	"github.com/torstei/apt-attest/internal/text"
 	"github.com/torstei/apt-attest/internal/trustroot"
 )
 
@@ -25,6 +27,7 @@ commands:
   hook                 run as apt's DPkg::Pre-Install-Pkgs hook (protocol version 3 on stdin)
   check <file.deb>     check a package the way the hook does; exit 1 if it would be refused
   explain <file.deb>   print the attestation's claims next to each policy's expectations
+  policies             list the policies, and warn about origins no configured apt source matches
   refresh              fetch Sigstore's current trusted root through TUF
   version              print the version
 
@@ -71,7 +74,7 @@ func run(args []string, stdin io.Reader, stderr io.Writer) int {
 		}
 		fmt.Fprintf(stderr, "apt-attest: trusted root updated in %s\n", p)
 		return 0
-	case "hook", "check", "explain":
+	case "hook", "check", "explain", "policies":
 	default:
 		fmt.Fprintf(stderr, "apt-attest: unknown command %q\n%s", cmd, usage)
 		return 2
@@ -87,6 +90,8 @@ func run(args []string, stdin io.Reader, stderr io.Writer) int {
 	switch cmd {
 	case "hook":
 		return hook(e, stdin, stderr)
+	case "policies":
+		return listPolicies(e, os.Stdout, stderr)
 	case "check", "explain":
 		if fs.NArg() != 1 {
 			fmt.Fprintf(stderr, "apt-attest %s: give one .deb file\n", cmd)
@@ -131,6 +136,7 @@ func hook(e *app.Engine, stdin io.Reader, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "apt-attest: %v\n", err)
 		return 1
 	}
+	e.ArchivesDir = in.ArchivesDir()
 
 	var pkgs []app.Package
 	for _, a := range in.Unpacks() {
@@ -191,17 +197,21 @@ func explain(e *app.Engine, file string) int {
 	if !ok {
 		return 2
 	}
-	fmt.Printf("package   %s %s\nfile      %s\nsha256    %s\n", p.Name, p.Version, p.File, p.SHA256)
+	safe := text.Safe
+	fmt.Printf("package   %s %s\nfile      %s\nsha256    %s\n", safe(p.Name), safe(p.Version), safe(p.File), p.SHA256)
 	for _, s := range p.Sources {
-		u, _ := s.URL()
-		fmt.Printf("source    %s\n", u)
+		u, err := s.URL()
+		if err != nil {
+			u = err.Error()
+		}
+		fmt.Printf("source    %s\n", safe(u))
 	}
 	claims, from, err := e.Claims(p, false)
 	if err != nil {
 		fmt.Printf("\nno attestation that verifies:\n    %s\n", err)
 		return 1
 	}
-	fmt.Printf("bundle    %s\n\n", from)
+	fmt.Printf("bundle    %s\n\n", safe(from))
 
 	w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 	fmt.Fprintln(w, "claim\tvalue")
@@ -215,21 +225,21 @@ func explain(e *app.Engine, file string) int {
 		{"runnerEnvironment", claims.RunnerEnvironment},
 		{"predicateType", claims.PredicateType},
 	} {
-		fmt.Fprintf(w, "%s\t%s\n", row[0], row[1])
+		fmt.Fprintf(w, "%s\t%s\n", row[0], safe(row[1]))
 	}
 	for _, s := range claims.Subjects {
-		fmt.Fprintf(w, "subject\t%s  sha256:%s\n", s.Name, s.SHA256)
+		fmt.Fprintf(w, "subject\t%s  sha256:%s\n", safe(s.Name), safe(s.SHA256))
 	}
 	w.Flush()
 
 	pols := e.Covering(p)
 	if len(pols) == 0 {
-		fmt.Printf("\nno policy covers %s; apt would install it unchecked\n", p.Name)
+		fmt.Printf("\nno policy covers %s; apt would install it unchecked\n", safe(p.Name))
 		return 0
 	}
 	status := 0
 	for _, pol := range pols {
-		fmt.Printf("\npolicy %s\n", pol.Path)
+		fmt.Printf("\npolicy %s\n", safe(pol.Path))
 		w := tabwriter.NewWriter(os.Stdout, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "\tfield\twant\tgot")
 		for _, c := range pol.Compare(claims, p.SHA256, p.Version, app.VersionLess) {
@@ -237,9 +247,55 @@ func explain(e *app.Engine, file string) int {
 			if !c.OK {
 				mark, status = "FAIL", 1
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", mark, c.Field, c.Want, c.Got)
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", mark, c.Field, safe(c.Want), safe(c.Got))
 		}
 		w.Flush()
 	}
 	return status
+}
+
+// listPolicies exits 1 if an origin matches no configured source: packages from that
+// repository, under whatever URL apt does use for it, are then not covered.
+func listPolicies(e *app.Engine, stdout, stderr io.Writer) int {
+	if len(e.Policies) == 0 {
+		fmt.Fprintln(stdout, "no policies; apt-attest checks nothing")
+		return 0
+	}
+	targets, err := aptsource.IndexTargets()
+	if err != nil {
+		fmt.Fprintf(stderr, "apt-attest: %v\n", err)
+		return 2
+	}
+	configured := map[string][]string{}
+	for _, t := range targets {
+		if o, err := policy.NormalizeOrigin(t.RepoURI); err == nil {
+			configured[o] = appendUnique(configured[o], t.RepoURI)
+		}
+	}
+	status := 0
+	for _, p := range e.Policies {
+		fmt.Fprintf(stdout, "%s\n  built by  https://github.com/%s/%s on %s\n",
+			p.Path, p.Identity.Repository, p.Identity.Workflow, strings.Join(p.Identity.Refs, ", "))
+		if len(p.Match.Packages) > 0 {
+			fmt.Fprintf(stdout, "  packages  %s\n", strings.Join(p.Match.Packages, ", "))
+		}
+		for i, o := range p.NormalizedOrigins() {
+			if srcs := configured[o]; len(srcs) > 0 {
+				fmt.Fprintf(stdout, "  origin    %s: matches %s\n", p.Match.Origins[i], strings.Join(srcs, ", "))
+			} else {
+				status = 1
+				fmt.Fprintf(stdout, "  origin    %s: WARNING: no configured apt source matches it, so nothing is covered through it\n", p.Match.Origins[i])
+			}
+		}
+	}
+	return status
+}
+
+func appendUnique(list []string, s string) []string {
+	for _, x := range list {
+		if x == s {
+			return list
+		}
+	}
+	return append(list, s)
 }

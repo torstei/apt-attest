@@ -11,10 +11,13 @@ jobs:
   ci:
     uses: ./.github/workflows/ci.yml
 
+  # The only job that can mint an attestation, so the release environment makes it wait
+  # for approval: an attestation that passes apt-attest exists once this job runs.
   build:
     needs: ci
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    environment: release
     permissions:
       contents: read
       id-token: write
