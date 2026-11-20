@@ -149,14 +149,27 @@ func LoadDir(dir string) ([]*Policy, error) {
 	return policies, errors.Join(errs...)
 }
 
-// NormalizeOrigin reduces an apt source base URL to a canonical form so that
-// "https://Host/path/" and "https://host/path" compare equal.
+// NormalizeOrigin reduces an apt source base URL to a canonical form, so that the same
+// repository compares equal however its URL is spelled: case of the host, a trailing
+// slash, a default port, and http against https (the files are signed either way).
 func NormalizeOrigin(s string) (string, error) {
 	u, err := url.Parse(s)
 	if err != nil || u.Scheme == "" || (u.Host == "" && u.Scheme != "file") {
 		return "", fmt.Errorf("%q is not an absolute URL", s)
 	}
-	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host) + strings.TrimRight(u.Path, "/"), nil
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.ToLower(u.Hostname())
+	port := u.Port()
+	if scheme == "http" || scheme == "https" {
+		if port == "80" || port == "443" {
+			port = ""
+		}
+		scheme = "http(s)"
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return scheme + "://" + host + strings.TrimRight(u.Path, "/"), nil
 }
 
 // Matches reports whether the policy covers a package with this name, coming from any
@@ -178,6 +191,9 @@ func (p *Policy) Matches(name string, origins []string) bool {
 }
 
 func (p *Policy) HasOrigins() bool { return len(p.origins) > 0 }
+
+// NormalizedOrigins are the policy's origins as NormalizeOrigin returns them.
+func (p *Policy) NormalizedOrigins() []string { return p.origins }
 
 // Claims are the facts a verified attestation establishes about how a package was built.
 type Claims struct {

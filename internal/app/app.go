@@ -18,6 +18,7 @@ import (
 	"github.com/torstei/apt-attest/internal/cache"
 	"github.com/torstei/apt-attest/internal/fetch"
 	"github.com/torstei/apt-attest/internal/policy"
+	"github.com/torstei/apt-attest/internal/text"
 	"github.com/torstei/apt-attest/internal/trustroot"
 )
 
@@ -42,6 +43,9 @@ type Engine struct {
 	BundlePath string
 	// NoCache makes every check verify the bundle again.
 	NoCache bool
+	// ArchivesDir is where apt keeps the packages it downloads. When set, and a policy
+	// matches by origin, a package there that no index accounts for is refused.
+	ArchivesDir string
 
 	verifier *attest.Verifier
 	rootName string
@@ -89,7 +93,7 @@ func (e *Engine) Candidates(pkgs []Package) []Package {
 
 // Locate fills in each package's SHA256 and the apt sources that carry that exact file.
 func (e *Engine) Locate(pkgs []Package) error {
-	var wants []aptsource.Want
+	var wants []string
 	for i := range pkgs {
 		if pkgs[i].SHA256 == "" {
 			sum, err := FileSHA256(pkgs[i].File)
@@ -98,7 +102,7 @@ func (e *Engine) Locate(pkgs []Package) error {
 			}
 			pkgs[i].SHA256 = sum
 		}
-		wants = append(wants, aptsource.Want{Package: pkgs[i].Name, SHA256: pkgs[i].SHA256})
+		wants = append(wants, pkgs[i].SHA256)
 	}
 	if len(wants) == 0 {
 		return nil
@@ -169,6 +173,13 @@ func (e *Engine) bundleLocations(p Package) []string {
 	return locs
 }
 
+func (e *Engine) untraceable(p Package) bool {
+	if e.ArchivesDir == "" || len(p.Sources) > 0 || !e.anyOrigins() {
+		return false
+	}
+	return filepath.Dir(filepath.Clean(p.File)) == filepath.Clean(e.ArchivesDir)
+}
+
 // Claims returns the verified claims for a package, from the cache or by fetching and
 // verifying its bundle.
 func (e *Engine) Claims(p Package, useCache bool) (policy.Claims, string, error) {
@@ -183,6 +194,11 @@ func (e *Engine) Claims(p Package, useCache bool) (policy.Claims, string, error)
 		return policy.Claims{}, "", err
 	}
 	var tried []string
+	for _, s := range p.Sources {
+		if _, err := s.URL(); err != nil {
+			tried = append(tried, text.Safe(err.Error()))
+		}
+	}
 	verifyFailed := false
 	for _, loc := range e.bundleLocations(p) {
 		var data []byte
@@ -192,13 +208,13 @@ func (e *Engine) Claims(p Package, useCache bool) (policy.Claims, string, error)
 			data, err = e.Fetcher.Get(loc)
 		}
 		if err != nil {
-			tried = append(tried, err.Error())
+			tried = append(tried, text.Safe(err.Error()))
 			continue
 		}
 		claims, err := v.Verify(data, p.SHA256)
 		if err != nil {
 			verifyFailed = true
-			tried = append(tried, fmt.Sprintf("%s: %v", loc, err))
+			tried = append(tried, text.Safe(fmt.Sprintf("%s: %v", loc, err)))
 			continue
 		}
 		c.Put(p.SHA256, claims)
@@ -213,14 +229,20 @@ func (e *Engine) Claims(p Package, useCache bool) (policy.Claims, string, error)
 // Check decides one located package. It reports every reason for refusal to e.Out and
 // returns false if the package must not be installed.
 func (e *Engine) Check(p Package) bool {
+	name := text.Safe(p.Name) + " " + text.Safe(p.Version) + " (" + text.Safe(p.File) + ")"
+	if e.untraceable(p) {
+		fmt.Fprintf(e.Out, "apt-attest: refusing %s: apt downloaded it, but no Packages index lists a file with its SHA256 %s, so its source cannot be checked against the policies' origins\n",
+			name, p.SHA256)
+		return false
+	}
 	pols := e.Covering(p)
 	if len(pols) == 0 {
 		return true
 	}
 	claims, from, err := e.Claims(p, true)
 	if err != nil {
-		fmt.Fprintf(e.Out, "apt-attest: refusing %s %s (%s): no attestation that verifies\n  policy: %s\n  tried:\n    %s\n",
-			p.Name, p.Version, p.File, policyNames(pols), err)
+		fmt.Fprintf(e.Out, "apt-attest: refusing %s: no attestation that verifies\n  policy: %s\n  tried:\n    %s\n",
+			name, policyNames(pols), err)
 		return false
 	}
 	ok := true
@@ -230,15 +252,14 @@ func (e *Engine) Check(p Package) bool {
 			continue
 		}
 		ok = false
-		fmt.Fprintf(e.Out, "apt-attest: refusing %s %s (%s): attestation does not match policy %s\n",
-			p.Name, p.Version, p.File, pol.Path)
+		fmt.Fprintf(e.Out, "apt-attest: refusing %s: attestation does not match policy %s\n", name, text.Safe(pol.Path))
 		for _, f := range fails {
-			fmt.Fprintf(e.Out, "  %s: want %s, got %s\n", f.Field, f.Want, orNone(f.Got))
+			fmt.Fprintf(e.Out, "  %s: want %s, got %s\n", f.Field, text.Safe(f.Want), orNone(text.Safe(f.Got)))
 		}
 	}
 	if ok {
 		fmt.Fprintf(e.Out, "apt-attest: %s %s attested by %s (%s, %s)\n",
-			p.Name, p.Version, claims.BuildSignerURI, policyNames(pols), from)
+			text.Safe(p.Name), text.Safe(p.Version), text.Safe(claims.BuildSignerURI), policyNames(pols), text.Safe(from))
 	}
 	return ok
 }
@@ -246,7 +267,7 @@ func (e *Engine) Check(p Package) bool {
 func policyNames(pols []*policy.Policy) string {
 	var names []string
 	for _, p := range pols {
-		names = append(names, p.Path)
+		names = append(names, text.Safe(p.Path))
 	}
 	return strings.Join(names, ", ")
 }

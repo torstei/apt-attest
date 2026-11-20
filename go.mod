@@ -5,6 +5,7 @@ go 1.27.2
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/sigstore/sigstore-go v1.4.0
+	github.com/theupdateframework/go-tuf/v2 v2.4.2
 )
 
 require (
@@ -52,7 +53,6 @@ require (
 	github.com/sigstore/rekor-tiles/v2 v2.4.0 // indirect
 	github.com/sigstore/sigstore v1.11.1 // indirect
 	github.com/sigstore/timestamp-authority/v2 v2.2.0 // indirect
-	github.com/theupdateframework/go-tuf/v2 v2.4.2 // indirect
 	github.com/transparency-dev/formats v0.1.1 // indirect
 	github.com/transparency-dev/merkle v0.0.2 // indirect
 	github.com/youmark/pkcs8 v0.0.0-20240726163527-a2c0da244d78 // indirect

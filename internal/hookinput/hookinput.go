@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/url"
+	"path/filepath"
 	"strings"
 )
 
@@ -108,4 +109,23 @@ func unescape(s string) string {
 		return u
 	}
 	return s
+}
+
+// ArchivesDir is where apt keeps downloaded packages: Dir::Cache::archives, relative to
+// Dir::Cache unless absolute, which is relative to Dir unless absolute.
+func (in *Input) ArchivesDir() string {
+	get := func(key, def string) string {
+		if v := in.Get(key); v != "" {
+			return v
+		}
+		return def
+	}
+	under := func(base, v string) string {
+		if strings.HasPrefix(v, "/") {
+			return filepath.Clean(v)
+		}
+		return filepath.Join(base, v)
+	}
+	cache := under(get("Dir", "/"), get("Dir::Cache", "var/cache/apt/"))
+	return under(cache, get("Dir::Cache::archives", "archives/"))
 }

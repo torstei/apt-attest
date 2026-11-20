@@ -10,7 +10,6 @@ package aptsource
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -25,7 +24,8 @@ type Source struct {
 	Filename string
 }
 
-// URL is where this source serves the package.
+// URL is where this source serves the package. Filename comes from the index, which
+// whoever holds the repository's key writes, so the result must stay under the source.
 func (s Source) URL() (string, error) {
 	base, err := url.Parse(strings.TrimRight(s.RepoURI, "/") + "/")
 	if err != nil {
@@ -35,7 +35,12 @@ func (s Source) URL() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return base.ResolveReference(rel).String(), nil
+	u := base.ResolveReference(rel)
+	if u.Scheme != base.Scheme || u.Host != base.Host || u.User != nil ||
+		!strings.HasPrefix(u.Path, base.Path) || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("Filename %q leads outside the source %s", s.Filename, s.RepoURI)
+	}
+	return u.String(), nil
 }
 
 type IndexTarget struct {
@@ -43,18 +48,13 @@ type IndexTarget struct {
 	Filename string
 }
 
-// Want identifies a package to look up.
-type Want struct {
-	Package string
-	SHA256  string
-}
-
-// Lookup returns, for each wanted SHA256, every source whose index lists a package of
-// that name with that hash.
-func Lookup(targets []IndexTarget, wants []Want) (map[string][]Source, error) {
-	bySHA := map[string]string{}
-	for _, w := range wants {
-		bySHA[strings.ToLower(w.SHA256)] = w.Package
+// Lookup returns, for each wanted SHA256, every source whose index lists a file with
+// that hash. It matches on the hash alone: apt normalizes package names, so comparing
+// names could miss the very record apt installs from.
+func Lookup(targets []IndexTarget, sha256s []string) (map[string][]Source, error) {
+	want := map[string]bool{}
+	for _, sha := range sha256s {
+		want[strings.ToLower(sha)] = true
 	}
 	found := map[string][]Source{}
 	for _, t := range targets {
@@ -65,9 +65,9 @@ func Lookup(targets []IndexTarget, wants []Want) (map[string][]Source, error) {
 			}
 			return nil, err
 		}
-		err = scan(rc, func(pkg, filename, sha string) {
+		err = scan(rc, func(filename, sha string) {
 			sha = strings.ToLower(sha)
-			if name, ok := bySHA[sha]; ok && name == pkg {
+			if want[sha] {
 				found[sha] = append(found[sha], Source{RepoURI: t.RepoURI, Filename: filename})
 			}
 		})
@@ -154,45 +154,56 @@ func isCompressed(name string) bool {
 	return false
 }
 
-// scan fails on input that has content but no Package records, so an index it cannot
-// read is an error rather than a source that carries nothing.
-func scan(r io.Reader, record func(pkg, filename, sha string)) error {
+// scan reports every (Filename, SHA256) pair of each record. Field names are matched
+// case-insensitively and repeated fields all count, as apt is lenient in the same ways.
+// Input that has content but no Package records is an error, so an index scan cannot
+// read is never taken for a source that carries nothing.
+func scan(r io.Reader, record func(filename, sha string)) error {
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
-	var pkg, filename, sha string
-	var records, nonEmpty int
+	var hasPackage bool
+	var filenames, shas []string
+	var records, content int
 	flush := func() {
-		if pkg != "" {
+		if hasPackage {
 			records++
 		}
-		if pkg != "" && filename != "" && sha != "" {
-			record(pkg, filename, sha)
+		for _, f := range filenames {
+			for _, h := range shas {
+				record(f, h)
+			}
 		}
-		pkg, filename, sha = "", "", ""
+		hasPackage, filenames, shas = false, nil, nil
 	}
 	for sc.Scan() {
-		line := sc.Bytes()
-		if len(bytes.TrimSpace(line)) > 0 {
-			nonEmpty++
-		}
-		if len(line) == 0 {
+		line := sc.Text()
+		if strings.TrimSpace(line) == "" {
 			flush()
 			continue
 		}
-		switch {
-		case bytes.HasPrefix(line, []byte("Package:")):
-			pkg = string(bytes.TrimSpace(line[len("Package:"):]))
-		case bytes.HasPrefix(line, []byte("Filename:")):
-			filename = string(bytes.TrimSpace(line[len("Filename:"):]))
-		case bytes.HasPrefix(line, []byte("SHA256:")):
-			sha = string(bytes.TrimSpace(line[len("SHA256:"):]))
+		content++
+		if line[0] == ' ' || line[0] == '\t' {
+			continue
+		}
+		name, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		value = strings.TrimSpace(value)
+		switch strings.ToLower(strings.TrimSpace(name)) {
+		case "package":
+			hasPackage = true
+		case "filename":
+			filenames = append(filenames, value)
+		case "sha256":
+			shas = append(shas, value)
 		}
 	}
 	flush()
 	if err := sc.Err(); err != nil {
 		return err
 	}
-	if nonEmpty > 0 && records == 0 {
+	if content > 0 && records == 0 {
 		return errors.New("not a Packages index: no Package records")
 	}
 	return nil

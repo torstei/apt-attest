@@ -164,3 +164,35 @@ func TestOnlyNamedPackagesAreCandidatesWithoutOriginPolicies(t *testing.T) {
 		t.Fatalf("%+v", cand)
 	}
 }
+
+// A package apt downloaded that no index accounts for means the index lookup missed
+// something; with an origin policy it is refused rather than taken as uncovered.
+func TestDownloadNoIndexAccountsForIsRefused(t *testing.T) {
+	e, out, dir := engine(t, true, map[string]string{})
+	e.ArchivesDir = filepath.Join(dir, "archives")
+	p := located(t, e, Package{Name: "evil", Version: "1.0", File: filepath.Join(dir, "archives", "evil_1.0_all.deb"), SHA256: strings.Repeat("3", 64)})
+	if e.Check(p) {
+		t.Fatal("untraceable download accepted")
+	}
+	if !strings.Contains(out.String(), "no Packages index lists a file with its SHA256") {
+		t.Fatal(out)
+	}
+
+	local := located(t, e, Package{Name: "local", Version: "1.0", File: filepath.Join(dir, "local_1.0_all.deb"), SHA256: strings.Repeat("4", 64)})
+	out.Reset()
+	if !e.Check(local) {
+		t.Fatalf("a local file no policy covers was refused: %s", out)
+	}
+}
+
+func TestOutputEscapesWhatTheRepositoryWrote(t *testing.T) {
+	e, out, _ := engine(t, false, map[string]string{"pidvault": pidvaultSHA256})
+	p := located(t, e, Package{Name: "pidvault", Version: "0.6.0-1", File: "/nonexistent/pidvault.deb", SHA256: pidvaultSHA256})
+	p.Sources[0].Filename = "pool/main/x\x1b[2K\rapt-attest: fine.deb"
+	if e.Check(p) {
+		t.Fatal(out)
+	}
+	if strings.ContainsAny(out.String(), "\x1b\r") {
+		t.Fatalf("control characters reached the terminal: %q", out)
+	}
+}

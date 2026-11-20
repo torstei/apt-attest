@@ -82,8 +82,10 @@ is required.
 
 - Matching by name requires the attestation wherever the package comes from.
 - Matching by origin requires it for everything from that source, so a stolen key cannot
-  ship an unattested package under a new name. An origin is the URL in the `deb` line,
-  and matches whatever apt shows as that source, ignoring a trailing slash.
+  ship an unattested package under a new name. An origin is the URL in the `deb` line.
+  It matches regardless of the host's case, a trailing slash, a default port, and
+  `http` against `https`. `apt-attest policies` lists each policy and warns about an
+  origin that no configured source matches, since nothing is covered through it.
 
 If several policies cover a package, it must satisfy all of them.
 
@@ -189,7 +191,9 @@ name. The bundle must come from Sigstore's public-good instance, which is what
     workflow: want https://github.com/torstei/pidvault/.github/workflows/release.yml, got https://github.com/torstei/pidvault/.github/workflows/ci.yml
   ```
 
-  A broken policy file, or Packages indexes it cannot read, also stop the install.
+  A broken policy file, or Packages indexes it cannot read, also stop the install. So
+  does, when a policy matches by origin, a package apt downloaded that no index lists by
+  its SHA256: its source cannot be checked.
 - **Offline reinstall.** The claims of each attestation that verifies are cached in
   `/var/lib/apt-attest/verified/`, keyed by the package's SHA256, so reinstalling needs
   neither the bundle nor the network. Cached claims are checked against the current
@@ -207,6 +211,7 @@ name. The bundle must come from Sigstore's public-good instance, which is what
 ```
 apt-attest check FILE.deb     check a package as the hook would; exit 1 if it would be refused
 apt-attest explain FILE.deb   print the attestation's claims next to each policy's expectations
+apt-attest policies           list the policies; exit 1 if an origin matches no configured source
 apt-attest refresh            fetch Sigstore's current trusted root
 apt-attest hook               the APT hook; reads apt's hook protocol version 3 on stdin
 ```
@@ -244,6 +249,12 @@ ok  repository_id   1431302070                                                  
 - `workflow` is checked against `buildSignerURI`, the workflow that signed. A release
   built by a reusable workflow in another repository is signed by that workflow, so a
   policy would have to name it.
+- Between apt-attest's check and dpkg's unpack, the `.deb` stays where it is: in apt's
+  cache, owned by apt's download user `_apt`, or for a local install wherever it was.
+  Whoever can write it there can swap it in between. apt's own hash check has the same
+  gap.
+- A cached result outlives a later revocation in Sigstore's trusted root.
+  `sudo rm -r /var/lib/apt-attest/verified` makes every package verify again.
 - Bundles are fetched over `http`, `https` and `file` only. A source using another apt
   method (`mirror+`, `tor+`) fails the check for covered packages, unless the bundle is
   already cached. Credentials in `/etc/apt/auth.conf.d` are not used.

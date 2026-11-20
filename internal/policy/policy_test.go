@@ -149,10 +149,14 @@ func mustNormalize(t *testing.T, s string) string {
 
 func TestNormalizeOrigin(t *testing.T) {
 	cases := map[string]string{
-		"https://Torstei.GitHub.io/pidvault/": "https://torstei.github.io/pidvault",
-		"https://torstei.github.io/pidvault":  "https://torstei.github.io/pidvault",
-		"file:/srv/repo/":                     "file:///srv/repo",
-		"file:///srv/repo":                    "file:///srv/repo",
+		"https://Torstei.GitHub.io/pidvault/":    "http(s)://torstei.github.io/pidvault",
+		"https://torstei.github.io/pidvault":     "http(s)://torstei.github.io/pidvault",
+		"http://torstei.github.io/pidvault":      "http(s)://torstei.github.io/pidvault",
+		"https://torstei.github.io:443/pidvault": "http(s)://torstei.github.io/pidvault",
+		"http://torstei.github.io:80/pidvault/":  "http(s)://torstei.github.io/pidvault",
+		"http://127.0.0.1:8001":                  "http(s)://127.0.0.1:8001",
+		"file:/srv/repo/":                        "file:///srv/repo",
+		"file:///srv/repo":                       "file:///srv/repo",
 	}
 	for in, want := range cases {
 		if got := mustNormalize(t, in); got != want {

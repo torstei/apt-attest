@@ -46,8 +46,9 @@ func (v *Verifier) Verify(bundleJSON []byte, sha256Hex string) (policy.Claims, e
 		return claims, fmt.Errorf("bad SHA256 %q", sha256Hex)
 	}
 	var b bundle.Bundle
+	// The parse error quotes the input, which may not be a bundle at all.
 	if err := b.UnmarshalJSON(bundleJSON); err != nil {
-		return claims, fmt.Errorf("unreadable bundle: %w", err)
+		return claims, errors.New("not a Sigstore bundle")
 	}
 	if b.GetDsseEnvelope() == nil {
 		return claims, errors.New("bundle holds no in-toto attestation (no DSSE envelope)")
