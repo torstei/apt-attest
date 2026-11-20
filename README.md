@@ -40,8 +40,23 @@ trusted root.
 
 ## Install
 
-Download the `.deb` for your architecture and its bundle from the
-[releases](https://github.com/torstei/apt-attest/releases), check it, and install it:
+From apt-attest's apt repository, for amd64 and arm64:
+
+```sh
+sudo curl -fsSLo /etc/apt/keyrings/apt-attest.asc https://torstei.github.io/apt-attest/apt-attest.asc
+echo "deb [signed-by=/etc/apt/keyrings/apt-attest.asc] https://torstei.github.io/apt-attest stable main" \
+  | sudo tee /etc/apt/sources.list.d/apt-attest.list
+sudo apt update && sudo apt install apt-attest
+sudo cp /usr/share/doc/apt-attest/examples/apt-attest.toml /etc/apt/attestations.d/
+```
+
+The repository's signing key has the fingerprint
+`0F01D2DAFDB8D3347F6C6B5EADB88295DD0C4979`. The last line makes apt-attest check its own
+upgrades: with that policy, apt installs a package from this repository only if
+apt-attest's release workflow built and attested it.
+
+Each release's packages and their bundles are also on the
+[releases](https://github.com/torstei/apt-attest/releases) page:
 
 ```sh
 gh attestation verify apt-attest_*_amd64.deb --repo torstei/apt-attest
@@ -53,8 +68,8 @@ It installs:
 - `/usr/bin/apt-attest`
 - `/etc/apt/apt.conf.d/20apt-attest`, which registers the hook
 - `/etc/apt/attestations.d/`, empty: nothing is checked until you add a policy
-- example policies in `/usr/share/doc/apt-attest/examples/`, including one for
-  apt-attest itself: `sudo cp /usr/share/doc/apt-attest/examples/apt-attest.toml /etc/apt/attestations.d/`
+- example policies in `/usr/share/doc/apt-attest/examples/`, including the one for
+  apt-attest itself
 
 ## Policies
 
@@ -179,7 +194,8 @@ each package, and copy the bundles into the repository's pool with the packages:
 ```
 
 One bundle can name several packages as subjects. Each package needs it under its own
-name. The bundle must come from Sigstore's public-good instance, which is what
+name. apt-attest's own [`scripts/build-apt-repo.sh`](scripts/build-apt-repo.sh) and
+[release workflow](.github/workflows/release.yml) are a complete example. The bundle must come from Sigstore's public-good instance, which is what
 `attest-build-provenance` uses for public repositories.
 
 ## Behaviour

@@ -1,7 +1,8 @@
-# Requires apt-attest itself to be built by its release workflow from a v* tag on a
-# GitHub-hosted runner.
+# Requires apt-attest, and everything from apt-attest's apt repository, to be built by
+# apt-attest's release workflow from a v* tag on a GitHub-hosted runner.
 [match]
 packages = ["apt-attest"]
+origins  = ["https://torstei.github.io/apt-attest"]
 
 [identity]
 issuer         = "https://token.actions.githubusercontent.com"
