@@ -12,6 +12,12 @@ cd "$(dirname "$0")/.."
 export SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}
 mkdir -p dist
 
+# as dpkg-gencontrol counts it, from file sizes rather than the build filesystem's blocks
+installed_size() {
+    find "$1" -mindepth 1 -path "$1/DEBIAN" -prune -o -printf '%y %s\n' |
+        awk '$1 == "f" { kib += int(($2 + 1023) / 1024); next } { kib += 1 } END { print kib }'
+}
+
 for arch in "${archs[@]}"; do
     root=$(mktemp -d)
     chmod 755 "$root"
@@ -35,7 +41,7 @@ Depends: apt (>= 1.1), dpkg
 Section: admin
 Priority: optional
 Homepage: https://github.com/torstei/apt-attest
-Installed-Size: $(du -sk --exclude=DEBIAN "$root" | cut -f1)
+Installed-Size: $(installed_size "$root")
 Description: check build provenance before apt installs a package
  An APT hook that, before dpkg unpacks a package a policy covers, verifies the
  package's Sigstore attestation and checks that it was made by the build the
