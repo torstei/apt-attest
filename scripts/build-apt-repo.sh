@@ -1,7 +1,8 @@
 #!/bin/bash
 # Builds a signed apt repository from the .deb files in DEBS into OUT: suite and codename
 # "stable", component "main", amd64 and arm64. Signs with KEY, which must be in gpg's
-# keyring. A package's provenance bundle, DEB.sigstore.json in DEBS, is published beside it.
+# keyring. Every package needs its provenance bundle, DEB.sigstore.json in DEBS, which is
+# published beside it.
 # Usage: scripts/build-apt-repo.sh DEBS OUT KEY
 set -euo pipefail
 
@@ -10,10 +11,13 @@ out=$2
 key=$3
 archs=(amd64 arm64)
 
+for deb in "$debs"/*.deb; do
+    [[ -f "$deb.sigstore.json" ]] || { echo "no provenance bundle for $(basename "$deb")" >&2; exit 1; }
+done
+
 rm -rf "$out"
 mkdir -p "$out/pool/main"
-cp "$debs"/*.deb "$out/pool/main/"
-find "$debs" -maxdepth 1 -name '*.deb.sigstore.json' -exec cp -t "$out/pool/main/" {} +
+cp "$debs"/*.deb "$debs"/*.deb.sigstore.json "$out/pool/main/"
 cd "$out"
 
 for arch in "${archs[@]}"; do
