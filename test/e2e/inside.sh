@@ -53,9 +53,13 @@ rm -f /etc/apt/apt.conf.d/docker-clean
 apt-get "${apt_q[@]}" update >/dev/null
 apt-get "${apt_q[@]}" install -y --no-install-recommends gnupg apt-utils python3 systemd >/dev/null
 
-step "apt-attest itself installs from a local file with no policies"
+step "apt-attest itself installs from a local file, with its own policy"
 installs "$attest_deb"
 apt-attest version
+dpkg-query --showformat '${Conffiles}\n' -W apt-attest | grep -F /etc/apt/attestations.d/apt-attest.toml
+
+step "a build of apt-attest that its release workflow did not make is refused"
+refused "--reinstall $attest_deb" "refusing apt-attest 0.0.0~e2e-1" "/etc/apt/attestations.d/apt-attest.toml"
 
 step "two signed repositories"
 export GNUPGHOME=/tmp/gnupg
@@ -161,7 +165,9 @@ publish /srv/attested
 update
 
 step "apt-attest policies finds the policy's origin among apt's sources"
-apt-attest policies
+apt-attest policies > /tmp/policies.txt || true
+cat /tmp/policies.txt
+grep -F "http://127.0.0.1:8001: matches http://127.0.0.1:8001/" /tmp/policies.txt
 mkdir -p /tmp/p
 sed 's|http://127.0.0.1:8001|https://127.0.0.1:8009|' /etc/apt/attestations.d/pidvault.toml > /tmp/p/x.toml
 apt-attest policies --policy-dir /tmp/p && fail "an origin no source matches went unreported"

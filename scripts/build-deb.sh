@@ -28,10 +28,11 @@ for arch in "${archs[@]}"; do
     CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -trimpath -buildvcs=false \
         -ldflags "-s -w -X main.version=$version" -o "$root/usr/bin/apt-attest" ./cmd/apt-attest
     install -m 644 packaging/20apt-attest "$root/etc/apt/apt.conf.d/20apt-attest"
+    install -m 644 packaging/apt-attest.toml "$root/etc/apt/attestations.d/apt-attest.toml"
     install -m 644 README.md packaging/copyright "$root/usr/share/doc/apt-attest/"
     install -m 644 examples/*.toml "$root/usr/share/doc/apt-attest/examples/"
     install -m 755 packaging/postrm "$root/DEBIAN/postrm"
-    echo /etc/apt/apt.conf.d/20apt-attest > "$root/DEBIAN/conffiles"
+    printf '%s\n' /etc/apt/apt.conf.d/20apt-attest /etc/apt/attestations.d/apt-attest.toml > "$root/DEBIAN/conffiles"
     cat > "$root/DEBIAN/control" <<CONTROL
 Package: apt-attest
 Version: $version-1

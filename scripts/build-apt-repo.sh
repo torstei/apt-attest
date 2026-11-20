@@ -50,9 +50,8 @@ sudo curl -fsSLo /etc/apt/keyrings/apt-attest.asc https://torstei.github.io/apt-
 echo "deb [signed-by=/etc/apt/keyrings/apt-attest.asc] https://torstei.github.io/apt-attest stable main" \\
   | sudo tee /etc/apt/sources.list.d/apt-attest.list
 sudo apt update &amp;&amp; sudo apt install apt-attest
-sudo cp /usr/share/doc/apt-attest/examples/apt-attest.toml /etc/apt/attestations.d/
 </pre>
-<p>The last line makes apt-attest check its own upgrades: only packages its release
+<p>apt-attest checks its own upgrades: once it is installed, only packages its release
 workflow built and attested are installed from this repository.</p>
 <p>Signing key fingerprint: <code>$fingerprint</code></p>
 HTML

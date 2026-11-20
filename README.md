@@ -47,13 +47,15 @@ sudo curl -fsSLo /etc/apt/keyrings/apt-attest.asc https://torstei.github.io/apt-
 echo "deb [signed-by=/etc/apt/keyrings/apt-attest.asc] https://torstei.github.io/apt-attest stable main" \
   | sudo tee /etc/apt/sources.list.d/apt-attest.list
 sudo apt update && sudo apt install apt-attest
-sudo cp /usr/share/doc/apt-attest/examples/apt-attest.toml /etc/apt/attestations.d/
 ```
 
 The repository's signing key has the fingerprint
-`0F01D2DAFDB8D3347F6C6B5EADB88295DD0C4979`. The last line makes apt-attest check its own
-upgrades: with that policy, apt installs a package from this repository only if
-apt-attest's release workflow built and attested it.
+`0F01D2DAFDB8D3347F6C6B5EADB88295DD0C4979`.
+
+apt-attest checks its own upgrades. It installs a policy for itself, so once it is
+installed, apt installs a package named `apt-attest`, or anything from this repository,
+only if apt-attest's release workflow built and attested it. The first install is not
+checked: until apt-attest is installed, nothing runs the check.
 
 Each release's packages and their bundles are also on the
 [releases](https://github.com/torstei/apt-attest/releases) page:
@@ -67,9 +69,10 @@ It installs:
 
 - `/usr/bin/apt-attest`
 - `/etc/apt/apt.conf.d/20apt-attest`, which registers the hook
-- `/etc/apt/attestations.d/`, empty: nothing is checked until you add a policy
-- example policies in `/usr/share/doc/apt-attest/examples/`, including the one for
-  apt-attest itself
+- `/etc/apt/attestations.d/apt-attest.toml`, the policy for apt-attest itself; nothing
+  else is checked until you add a policy. Delete it to install builds of apt-attest
+  that its release workflow did not make; upgrades do not put it back.
+- an example policy in `/usr/share/doc/apt-attest/examples/`
 
 ## Policies
 
@@ -293,6 +296,11 @@ go test ./...          # unit tests, including the real pidvault 0.6.0 bundle
 test/e2e/run.sh        # signed local repositories and real installs, in a container
 scripts/build-deb.sh 0.1.0 amd64 arm64
 ```
+
+Installed copies check each upgrade of apt-attest against the policy they already
+have, `packaging/apt-attest.toml`: the repository, its IDs, `release.yml`, `v*` tags
+and a GitHub-hosted runner. Changing any of these takes two releases: one whose policy
+accepts both the old and the new, then the change.
 
 The built-in trusted root is `internal/trustroot/trusted_root.json`. To update it, run
 `go run ./cmd/apt-attest refresh --state-dir DIR` and copy `DIR/trusted_root.json` over it.
