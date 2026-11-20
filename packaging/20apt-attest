@@ -1,0 +1,9 @@
+// Checks each package's Sigstore build provenance before dpkg unpacks it, for packages
+// a policy in /etc/apt/attestations.d covers. See /usr/share/doc/apt-attest/README.md.
+
+// The "|| [ ! -e ]" lets apt keep working if the package is removed but this conffile
+// is kept; with the binary present, a refusal still fails the install.
+DPkg::Pre-Install-Pkgs { "/usr/bin/apt-attest hook || [ ! -e /usr/bin/apt-attest ]"; };
+DPkg::Tools::Options::/usr/bin/apt-attest::Version "3";
+
+APT::Update::Post-Invoke-Success { "[ ! -x /usr/bin/apt-attest ] || /usr/bin/apt-attest refresh 2>/dev/null || true"; };

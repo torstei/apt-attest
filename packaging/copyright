@@ -1,0 +1,9 @@
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: apt-attest
+Source: https://github.com/torstei/apt-attest
+
+Files: *
+Copyright: 2026 Torstein Tauno Svendsen <torstei@gmail.com>
+License: MIT or Apache-2.0
+ The full texts are in MIT-LICENSE and APACHE-LICENSE in the source repository; the
+ Apache License 2.0 is also in /usr/share/common-licenses/Apache-2.0.

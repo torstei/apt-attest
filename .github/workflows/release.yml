@@ -1,0 +1,72 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: ci
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build the packages
+        run: |
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          scripts/build-deb.sh "${GITHUB_REF_NAME#v}" amd64 arm64
+      - name: Check that a second build in another directory is identical
+        run: |
+          git worktree add --detach "$RUNNER_TEMP/again" HEAD
+          cd "$RUNNER_TEMP/again"
+          export SOURCE_DATE_EPOCH=$(git log -1 --format=%ct)
+          scripts/build-deb.sh "${GITHUB_REF_NAME#v}" amd64 arm64
+          for deb in dist/*.deb; do cmp "$deb" "$GITHUB_WORKSPACE/$deb"; done
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        id: provenance
+        with:
+          subject-path: dist/*.deb
+      # one bundle names every package as a subject; apt-attest looks for it under each
+      # package's name
+      - name: Keep the provenance bundle beside each package
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: |
+          for deb in dist/*.deb; do cp "$BUNDLE" "$deb.sigstore.json"; done
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: deb
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: deb
+          path: dist
+      - name: Create the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" --generate-notes dist/*

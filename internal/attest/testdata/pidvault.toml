@@ -1,0 +1,15 @@
+# Requires every pidvault package, and everything from pidvault's apt repository, to be
+# built by pidvault's release workflow from a v* tag on a GitHub-hosted runner.
+[match]
+packages = ["pidvault"]
+origins  = ["https://torstei.github.io/pidvault"]
+
+[identity]
+issuer         = "https://token.actions.githubusercontent.com"
+repository     = "torstei/pidvault"
+repository_id  = 1431302070
+owner_id       = 1751971
+workflow       = ".github/workflows/release.yml"
+refs           = ["refs/tags/v*"]
+runner         = "github-hosted"
+predicate_type = "https://slsa.dev/provenance/v1"
