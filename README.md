@@ -53,7 +53,8 @@ It installs:
 - `/usr/bin/apt-attest`
 - `/etc/apt/apt.conf.d/20apt-attest`, which registers the hook
 - `/etc/apt/attestations.d/`, empty: nothing is checked until you add a policy
-- example policies in `/usr/share/doc/apt-attest/examples/`
+- example policies in `/usr/share/doc/apt-attest/examples/`, including one for
+  apt-attest itself: `sudo cp /usr/share/doc/apt-attest/examples/apt-attest.toml /etc/apt/attestations.d/`
 
 ## Policies
 
