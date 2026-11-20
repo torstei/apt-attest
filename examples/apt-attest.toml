@@ -1,0 +1,14 @@
+# Requires apt-attest itself to be built by its release workflow from a v* tag on a
+# GitHub-hosted runner.
+[match]
+packages = ["apt-attest"]
+
+[identity]
+issuer         = "https://token.actions.githubusercontent.com"
+repository     = "torstei/apt-attest"
+repository_id  = 1465853268
+owner_id       = 1751971
+workflow       = ".github/workflows/release.yml"
+refs           = ["refs/tags/v*"]
+runner         = "github-hosted"
+predicate_type = "https://slsa.dev/provenance/v1"
